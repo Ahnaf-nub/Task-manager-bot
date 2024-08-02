@@ -3,7 +3,7 @@ import google.generativeai as genai
 import psycopg2
 from psycopg2 import sql
 
-# Configure the generative AI
+# Gemini Part
 GOOGLE_API_KEY = ""
 genai.configure(api_key=GOOGLE_API_KEY)
 model = genai.GenerativeModel('gemini-1.5-flash')
@@ -14,7 +14,6 @@ DB_NAME = "postgres"
 DB_USER = "postgres"
 DB_PASSWORD = ""
 
-# Connect to PostgreSQL
 conn = psycopg2.connect(
     host=DB_HOST,
     database=DB_NAME,
@@ -23,7 +22,7 @@ conn = psycopg2.connect(
 )
 cur = conn.cursor()
 
-# Create the tasks and notes tables if they don't exist
+# Create the tasks table if it doesn't exist
 cur.execute('''
     CREATE TABLE IF NOT EXISTS tasks (
         id SERIAL PRIMARY KEY,
@@ -31,13 +30,24 @@ cur.execute('''
         deadline DATE NOT NULL
     )
 ''')
+conn.commit()
+
+# Create or update the notes table to include the topic column
 cur.execute('''
     CREATE TABLE IF NOT EXISTS notes (
         id SERIAL PRIMARY KEY,
+        topic TEXT NOT NULL,
         content TEXT NOT NULL
     )
 ''')
 conn.commit()
+
+# Check if the topic column exists, and add it if it doesn't
+cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='notes' AND column_name='topic'")
+result = cur.fetchone()
+if not result:
+    cur.execute('ALTER TABLE notes ADD COLUMN topic TEXT')
+    conn.commit()
 
 class Message():
     def __init__(self, user: str, text: str):
@@ -85,7 +95,10 @@ def main(page: ft.Page):
                 for task in cur.fetchall():
                     task_list.controls.append(
                         ft.Row([
-                            ft.Text(f"Task: {task[1]} - Deadline: {task[2]}"),
+                                ft.TextButton(
+                                    f"Task: {task[1]} - Deadline: {task[2]}",
+                                    on_click=lambda e, task_id=task[0], task_name=task[1]: ask_about_task(task_id, task_name)
+                            ),
                             ft.IconButton(icon=ft.icons.DELETE, on_click=lambda e, task_id=task[0]: delete_task(task_id))
                         ])
                     )
@@ -109,7 +122,8 @@ def main(page: ft.Page):
             except Exception as e:
                 print(f"Error adding task: {e}")
                 conn.rollback()
-        
+        def ask_about_task(task_id, task_name):
+            pass
         def delete_task(task_id):
             try:
                 cur.execute(sql.SQL("DELETE FROM tasks WHERE id = %s"), [task_id])
@@ -132,17 +146,20 @@ def main(page: ft.Page):
     
     def build_notes_tab():
         note_list = ft.ListView(expand=True, spacing=10, padding=10, auto_scroll=True)
-        topic_content = ft.TextField(expand=True, hint_text="Topic")
+        note_topic = ft.TextField(expand=True, hint_text="Topic name")
         note_content = ft.TextField(expand=True, hint_text="Note content")
         
         def load_notes():
             try:
                 note_list.controls.clear()
-                cur.execute("SELECT id, content, topic FROM notes")
+                cur.execute("SELECT id, topic, content FROM notes")
                 for note in cur.fetchall():
                     note_list.controls.append(
                         ft.Row([
-                            ft.Text(f"Task: {note[1]} - Topic: {note[2]}"),
+                            ft.TextButton(
+                            f"Topic: {note[1]} - Note: {note[2]}",
+                            on_click=lambda e, note_id=note[0], note_topic=note[1]: ask_about_note(note_id, note_topic)
+                        ),
                             ft.IconButton(icon=ft.icons.DELETE, on_click=lambda e, note_id=note[0]: delete_note(note_id))
                         ])
                     )
@@ -150,18 +167,19 @@ def main(page: ft.Page):
             except Exception as e:
                 print(f"Error loading notes: {e}")
                 conn.rollback()
-        
+        def ask_about_note(note_id, note_topic):
+            pass
         def add_note_click(e):
             try:
-                if note_content.value:
+                if note_topic.value and note_content.value:
                     cur.execute(
-                        sql.SQL("INSERT INTO notes (content, topic) VALUES (%s)"),
-                        [note_content.value]
+                        sql.SQL("INSERT INTO notes (topic, content) VALUES (%s, %s)"),
+                        [note_topic.value, note_content.value]
                     )
                     conn.commit()
                     load_notes()
+                    note_topic.value = ""
                     note_content.value = ""
-                    topic_content.value = ""   
                     page.update()
             except Exception as e:
                 print(f"Error adding note: {e}")
@@ -181,7 +199,7 @@ def main(page: ft.Page):
         return ft.Container(
             content=ft.Column([
                 note_list,
-                ft.Row([note_content, ft.ElevatedButton("Add Note", on_click=add_note_click)])
+                ft.Row([note_topic, note_content, ft.ElevatedButton("Add Note", on_click=add_note_click)])
             ]),
             expand=True,
             padding=10
