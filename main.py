@@ -8,10 +8,11 @@ GOOGLE_API_KEY = ""
 genai.configure(api_key=GOOGLE_API_KEY)
 model = genai.GenerativeModel('gemini-1.5-flash')
 
+# PostgreSQL connection details
 DB_HOST = "localhost"
 DB_NAME = "postgres"
 DB_USER = "postgres"
-DB_PASSWORD = "password"
+DB_PASSWORD = ""
 
 # Connect to PostgreSQL
 conn = psycopg2.connect(
@@ -22,11 +23,18 @@ conn = psycopg2.connect(
 )
 cur = conn.cursor()
 
+# Create the tasks and notes tables if they don't exist
 cur.execute('''
     CREATE TABLE IF NOT EXISTS tasks (
         id SERIAL PRIMARY KEY,
         name TEXT NOT NULL,
         deadline DATE NOT NULL
+    )
+''')
+cur.execute('''
+    CREATE TABLE IF NOT EXISTS notes (
+        id SERIAL PRIMARY KEY,
+        content TEXT NOT NULL
     )
 ''')
 conn.commit()
@@ -69,30 +77,18 @@ def main(page: ft.Page):
         task_list = ft.ListView(expand=True, spacing=10, padding=10, auto_scroll=True)
         task_name = ft.TextField(expand=True, hint_text="Task name")
         task_deadline = ft.TextField(expand=True, hint_text="Task deadline")
-        def delete_task_click(e):
-            try:
-                selected_task = task_list.selected_control
-                if selected_task:
-                    task_name = selected_task.text.split(" - ")[0].split(": ")[1]
-                    cur.execute(
-                        sql.SQL("DELETE FROM tasks WHERE name = %s"),
-                        [task_name]
-                    )
-                    conn.commit()
-                    load_tasks()
-                    page.update()
-            except Exception as e:
-                print(f"Error deleting task: {e}")
-                conn.rollback()
-
-        delete_button = ft.ElevatedButton("Delete Task", on_click=delete_task_click)
-        task_list.controls.append(delete_button)
+        
         def load_tasks():
             try:
                 task_list.controls.clear()
-                cur.execute("SELECT name, deadline FROM tasks")
+                cur.execute("SELECT id, name, deadline FROM tasks")
                 for task in cur.fetchall():
-                    task_list.controls.append(ft.Text(f"Task: {task[0]} - Deadline: {task[1]}"))
+                    task_list.controls.append(
+                        ft.Row([
+                            ft.Text(f"Task: {task[1]} - Deadline: {task[2]}"),
+                            ft.IconButton(icon=ft.icons.DELETE, on_click=lambda e, task_id=task[0]: delete_task(task_id))
+                        ])
+                    )
                 page.update()
             except Exception as e:
                 print(f"Error loading tasks: {e}")
@@ -113,6 +109,15 @@ def main(page: ft.Page):
             except Exception as e:
                 print(f"Error adding task: {e}")
                 conn.rollback()
+        
+        def delete_task(task_id):
+            try:
+                cur.execute(sql.SQL("DELETE FROM tasks WHERE id = %s"), [task_id])
+                conn.commit()
+                load_tasks()
+            except Exception as e:
+                print(f"Error deleting task: {e}")
+                conn.rollback()
 
         load_tasks()
         
@@ -125,11 +130,69 @@ def main(page: ft.Page):
             padding=10
         )
     
+    def build_notes_tab():
+        note_list = ft.ListView(expand=True, spacing=10, padding=10, auto_scroll=True)
+        topic_content = ft.TextField(expand=True, hint_text="Topic")
+        note_content = ft.TextField(expand=True, hint_text="Note content")
+        
+        def load_notes():
+            try:
+                note_list.controls.clear()
+                cur.execute("SELECT id, content, topic FROM notes")
+                for note in cur.fetchall():
+                    note_list.controls.append(
+                        ft.Row([
+                            ft.Text(f"Task: {note[1]} - Topic: {note[2]}"),
+                            ft.IconButton(icon=ft.icons.DELETE, on_click=lambda e, note_id=note[0]: delete_note(note_id))
+                        ])
+                    )
+                page.update()
+            except Exception as e:
+                print(f"Error loading notes: {e}")
+                conn.rollback()
+        
+        def add_note_click(e):
+            try:
+                if note_content.value:
+                    cur.execute(
+                        sql.SQL("INSERT INTO notes (content, topic) VALUES (%s)"),
+                        [note_content.value]
+                    )
+                    conn.commit()
+                    load_notes()
+                    note_content.value = ""
+                    topic_content.value = ""   
+                    page.update()
+            except Exception as e:
+                print(f"Error adding note: {e}")
+                conn.rollback()
+        
+        def delete_note(note_id):
+            try:
+                cur.execute(sql.SQL("DELETE FROM notes WHERE id = %s"), [note_id])
+                conn.commit()
+                load_notes()
+            except Exception as e:
+                print(f"Error deleting note: {e}")
+                conn.rollback()
+
+        load_notes()
+        
+        return ft.Container(
+            content=ft.Column([
+                note_list,
+                ft.Row([note_content, ft.ElevatedButton("Add Note", on_click=add_note_click)])
+            ]),
+            expand=True,
+            padding=10
+        )
+    
     tabs = ft.Tabs(
         selected_index=0,
         tabs=[
-            ft.Tab(text="Chat", content=build_chat_tab()),
-            ft.Tab(text="Tasks", content=build_tasks_tab())
+            ft.Tab(text="Chat", icon=ft.icons.CHAT, content=build_chat_tab()),
+            ft.Tab(text="Tasks", icon=ft.icons.CHECK, content=build_tasks_tab()),
+            ft.Tab(text="Notes", icon=ft.icons.NOTE, content=build_notes_tab())
         ],
         expand=True
     )
