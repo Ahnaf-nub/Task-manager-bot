@@ -35,12 +35,13 @@ cur.execute('''
 ''')
 conn.commit()
 
-# Create or update the notes table to include the topic column
+# Create or update the notes table to include the topic, content, and image columns
 cur.execute('''
     CREATE TABLE IF NOT EXISTS notes (
         id SERIAL PRIMARY KEY,
         topic TEXT NOT NULL,
-        content TEXT NOT NULL
+        content TEXT NOT NULL,
+        image BYTEA
     )
 ''')
 conn.commit()
@@ -58,7 +59,7 @@ class Message():
         self.text = text
         response = model.generate_content(text)
         self.response_text = response.text
-        
+
 def check_deadlines():
     while True:
         try:
@@ -72,12 +73,11 @@ def check_deadlines():
             print(f"Error checking deadlines: {e}")
             time.sleep(60)  # Retry after 1 minute if there's an error
 
-
 def main(page: ft.Page):
     def build_chat_tab():
         chat = ft.ListView(expand=True, spacing=10, padding=10, auto_scroll=True)
         new_message = ft.TextField(expand=True, hint_text="Type your message here...")
-        
+
         def on_message(message: Message):
             chat.controls.append(ft.Text(f"User: {message.text}"))
             chat.controls.append(ft.Text(f"Bot: {message.response_text}"))
@@ -87,8 +87,12 @@ def main(page: ft.Page):
 
         def send_click(e):
             page.pubsub.send_all(Message(user=page.session_id, text=new_message.value))
-            if new_message.value:
-                new_message.value = ""
+            user_message = new_message.value
+            if user_message:
+                processing_text = ft.Text("Processing answer...", color="blue")
+                chat.controls.append(processing_text)
+                page.update()
+            new_message.value = ""
             page.update()
         
         return ft.Container(
@@ -99,12 +103,12 @@ def main(page: ft.Page):
             expand=True,
             padding=10
         )
-    
+
     def build_tasks_tab():
         task_list = ft.ListView(expand=True, spacing=10, padding=10, auto_scroll=True)
         task_name = ft.TextField(expand=True, hint_text="Task name")
         task_deadline = ft.TextField(expand=True, hint_text="Deadline")
-        
+
         def load_tasks():
             try:
                 task_list.controls.clear()
@@ -123,12 +127,12 @@ def main(page: ft.Page):
             except Exception as e:
                 print(f"Error loading tasks: {e}")
                 conn.rollback()
-        
+
         def add_task_click(e):
             try:
                 if task_name.value and task_deadline.value:
                     cur.execute(
-                        sql.SQL("INSERT INTO tasks (name, deadline) VALUES (%s, %s)"),
+                        sql.SQL("INSERT INTO tasks (name, deadline,) VALUES (%s, %s)"),
                         [task_name.value, task_deadline.value]
                     )
                     conn.commit()
@@ -139,7 +143,7 @@ def main(page: ft.Page):
             except Exception as e:
                 print(f"Error adding task: {e}")
                 conn.rollback()
-        
+
         def delete_task(task_id):
             try:
                 cur.execute(sql.SQL("DELETE FROM tasks WHERE id = %s"), [task_id])
@@ -148,7 +152,7 @@ def main(page: ft.Page):
             except Exception as e:
                 print(f"Error deleting task: {e}")
                 conn.rollback()
-        
+
         def ask_about_task(task_id, task_name):
             message = f"Help me to do this task: {task_name}"
             page.pubsub.send_all(Message(user=page.session_id, text=message))
@@ -156,7 +160,7 @@ def main(page: ft.Page):
             page.update()
 
         load_tasks()
-        
+
         return ft.Container(
             content=ft.Column([
                 task_list,
@@ -165,47 +169,55 @@ def main(page: ft.Page):
             expand=True,
             padding=10
         )
-    
+
     def build_notes_tab():
         note_list = ft.ListView(expand=True, spacing=10, padding=10, auto_scroll=True)
-        note_topic = ft.TextField(expand=True, hint_text="Topic name")
-        note_content = ft.TextField(expand=True, hint_text="Note content")
-        
+        note_topic = ft.TextField(hint_text="Topic")
+        note_content = ft.TextField(hint_text="Content", multiline=True)
+        file_picker = ft.FilePicker()
+        selected_image = None
+
+        def on_file_pick(e):
+            nonlocal selected_image
+            selected_image = e.file_bytes
+
+        file_picker.on_file_pick = on_file_pick
+
         def load_notes():
             try:
+                cur.execute("SELECT id, topic, content, image FROM notes")
+                notes = cur.fetchall()
                 note_list.controls.clear()
-                cur.execute("SELECT id, topic, content FROM notes")
-                for note in cur.fetchall():
-                    note_list.controls.append(
-                        ft.Row([
-                            ft.TextButton(
-                                f"Topic: {note[1]} - Note: {note[2]}",
-                                on_click=lambda e, note_id=note[0], note_topic=note[1], note_content=note[2]: ask_about_note(note_id, note_topic, note_content)
-                            ),
-                            ft.IconButton(icon=ft.icons.DELETE, on_click=lambda e, note_id=note[0]: delete_note(note_id))
-                        ])
-                    )
+                for note in notes:
+                    image = ft.Image(src=ft.ImageSource.data_uri(note[3]), fit=ft.ImageFit.contain) if note[3] else None
+                    note_controls = [ft.Text(f"{note[1]}: {note[2]}")]
+                    if image:
+                        note_controls.append(image)
+                    note_controls.append(ft.ElevatedButton("Delete", on_click=lambda e, note_id=note[0]: delete_note(note_id)))
+                    note_controls.append(ft.ElevatedButton("Ask", on_click=lambda e, note_id=note[0], note_topic=note[1], note_content=note[2]: ask_about_note(note_id, note_topic, note_content)))
+                    note_list.controls.append(ft.Row(note_controls))
                 page.update()
             except Exception as e:
                 print(f"Error loading notes: {e}")
                 conn.rollback()
-        
+
         def add_note_click(e):
             try:
                 if note_topic.value and note_content.value:
                     cur.execute(
-                        sql.SQL("INSERT INTO notes (topic, content) VALUES (%s, %s)"),
-                        [note_topic.value, note_content.value]
+                        sql.SQL("INSERT INTO notes (topic, content, image) VALUES (%s, %s, %s)"),
+                        [note_topic.value, note_content.value, psycopg2.Binary(selected_image) if selected_image else None]
                     )
                     conn.commit()
                     load_notes()
                     note_topic.value = ""
                     note_content.value = ""
+                    selected_image = None
                     page.update()
             except Exception as e:
                 print(f"Error adding note: {e}")
                 conn.rollback()
-        
+
         def delete_note(note_id):
             try:
                 cur.execute(sql.SQL("DELETE FROM notes WHERE id = %s"), [note_id])
@@ -214,30 +226,36 @@ def main(page: ft.Page):
             except Exception as e:
                 print(f"Error deleting note: {e}")
                 conn.rollback()
-        
-        def ask_about_note(note_id, note_topic, note_content):          
-            message = f"Explain me more about {note_topic} where content is {note_content}"
-            page.pubsub.send_all(Message(user=page.session_id, text=message))
-            tabs.selected_index = 0
-            page.update()
+
+        def ask_about_note(note_id, note_topic, note_content):
+            if note_topic and note_content:       
+                message = f"Explain me more about {note_topic} where content is {note_content}."
+                page.pubsub.send_all(Message(user=page.session_id, text=message))
+                tabs.selected_index = 0
+                page.update()
+            else:
+                message = f"Explain me more about {note_topic}."
+                page.pubsub.send_all(Message(user=page.session_id, text=message))
+                tabs.selected_index = 0
+                page.update()
 
         load_notes()
-        
+
         return ft.Container(
             content=ft.Column([
                 note_list,
-                ft.Row([note_topic, note_content, ft.ElevatedButton("Add Note", on_click=add_note_click)])
+                ft.Row([note_topic, note_content, ft.ElevatedButton("Add Note", on_click=add_note_click), ft.ElevatedButton("Upload", on_click=lambda e: file_picker.pick_files(allow_multiple=True))])
             ]),
             expand=True,
             padding=10
         )
-    
+
     tabs = ft.Tabs(
         selected_index=0,
         tabs=[
-            ft.Tab(text="Chat", content=build_chat_tab()),
-            ft.Tab(text="Tasks", content=build_tasks_tab()),
-            ft.Tab(text="Notes", content=build_notes_tab())
+            ft.Tab(text="Chat", icon=ft.icons.CHAT, content=build_chat_tab()),
+            ft.Tab(text="Tasks", icon=ft.icons.CHECK, content=build_tasks_tab()),
+            ft.Tab(text="Notes", icon=ft.icons.NOTE, content=build_notes_tab())
         ],
         expand=True
     )
@@ -245,3 +263,6 @@ def main(page: ft.Page):
     page.add(tabs)
 
 ft.app(target=main)
+
+# Start a background thread for checking deadlines
+threading.Thread(target=check_deadlines, daemon=True).start()
