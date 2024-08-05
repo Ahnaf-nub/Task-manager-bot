@@ -5,6 +5,7 @@ from psycopg2 import sql
 import threading
 import time
 import datetime
+import base64
 
 # Gemini Part
 GOOGLE_API_KEY = ""
@@ -35,7 +36,7 @@ cur.execute('''
 ''')
 conn.commit()
 
-# Create or update the notes table to include the topic, content, and image columns
+# Ensure the notes table includes the image column
 cur.execute('''
     CREATE TABLE IF NOT EXISTS notes (
         id SERIAL PRIMARY KEY,
@@ -46,14 +47,14 @@ cur.execute('''
 ''')
 conn.commit()
 
-# Check if the topic column exists, and add it if not
-cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='notes' AND column_name='topic'")
+# Add the image column if it doesn't exist
+cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='notes' AND column_name='image'")
 result = cur.fetchone()
 if not result:
-    cur.execute('ALTER TABLE notes ADD COLUMN topic TEXT NOT NULL')
+    cur.execute('ALTER TABLE notes ADD COLUMN image BYTEA')
     conn.commit()
 
-class Message():
+class Message:
     def __init__(self, user: str, text: str):
         self.user = user
         self.text = text
@@ -74,6 +75,16 @@ def check_deadlines():
             time.sleep(60)  # Retry after 1 minute if there's an error
 
 def main(page: ft.Page):
+    selected_image = None
+
+    def on_file_picked(e):
+        nonlocal selected_image
+        if e.files:
+            selected_image = e.files[0].read_bytes()
+
+    file_picker = ft.FilePicker()
+    file_picker.on_file_picked = on_file_picked
+
     def build_chat_tab():
         chat = ft.ListView(expand=True, spacing=10, padding=10, auto_scroll=True)
         new_message = ft.TextField(expand=True, hint_text="Type your message here...")
@@ -132,7 +143,7 @@ def main(page: ft.Page):
             try:
                 if task_name.value and task_deadline.value:
                     cur.execute(
-                        sql.SQL("INSERT INTO tasks (name, deadline,) VALUES (%s, %s)"),
+                        sql.SQL("INSERT INTO tasks (name, deadline) VALUES (%s, %s)"),
                         [task_name.value, task_deadline.value]
                     )
                     conn.commit()
@@ -174,14 +185,6 @@ def main(page: ft.Page):
         note_list = ft.ListView(expand=True, spacing=10, padding=10, auto_scroll=True)
         note_topic = ft.TextField(hint_text="Topic")
         note_content = ft.TextField(hint_text="Content", multiline=True)
-        file_picker = ft.FilePicker()
-        selected_image = None
-
-        def on_file_pick(e):
-            nonlocal selected_image
-            selected_image = e.file_bytes
-
-        file_picker.on_file_pick = on_file_pick
 
         def load_notes():
             try:
@@ -189,10 +192,13 @@ def main(page: ft.Page):
                 notes = cur.fetchall()
                 note_list.controls.clear()
                 for note in notes:
-                    image = ft.Image(src=ft.ImageSource.data_uri(note[3]), fit=ft.ImageFit.contain) if note[3] else None
                     note_controls = [ft.Text(f"{note[1]}: {note[2]}")]
-                    if image:
-                        note_controls.append(image)
+                    if note[3]:
+                        image_data = base64.b64encode(note[3]).decode('utf-8')
+                        image_src = f"data:image/png;base64,{image_data}"
+                        image_preview = ft.Image(src=image_src, fit=ft.ImageFit.contain, width=100, height=100)
+                        view_image_button = ft.TextButton("View Image", on_click=lambda e, image_src=image_src: view_image(image_src))
+                        note_controls.extend([image_preview, view_image_button])
                     note_controls.append(ft.ElevatedButton("Delete", on_click=lambda e, note_id=note[0]: delete_note(note_id)))
                     note_controls.append(ft.ElevatedButton("Ask", on_click=lambda e, note_id=note[0], note_topic=note[1], note_content=note[2]: ask_about_note(note_id, note_topic, note_content)))
                     note_list.controls.append(ft.Row(note_controls))
@@ -202,6 +208,7 @@ def main(page: ft.Page):
                 conn.rollback()
 
         def add_note_click(e):
+            nonlocal selected_image
             try:
                 if note_topic.value and note_content.value:
                     cur.execute(
@@ -227,24 +234,30 @@ def main(page: ft.Page):
                 print(f"Error deleting note: {e}")
                 conn.rollback()
 
-        def ask_about_note(note_id, note_topic, note_content):
-            if note_topic and note_content:       
-                message = f"Explain me more about {note_topic} where content is {note_content}."
-                page.pubsub.send_all(Message(user=page.session_id, text=message))
-                tabs.selected_index = 0
-                page.update()
-            else:
-                message = f"Explain me more about {note_topic}."
-                page.pubsub.send_all(Message(user=page.session_id, text=message))
-                tabs.selected_index = 0
-                page.update()
+        def ask_about_note(note_id, note_topic, note_content):          
+            message = f"Explain me more about {note_topic} where content is {note_content}"
+            page.pubsub.send_all(Message(user=page.session_id, text=message))
+            tabs.selected_index = 0
+            page.update()
+
+        def view_image(image_src):
+            image_viewer = ft.Image(src=image_src, fit=ft.ImageFit.contain)
+            dialog = ft.AlertDialog(
+                title=ft.Text("Image Viewer"),
+                content=image_viewer,
+                actions=[ft.TextButton("Close", on_click=lambda e: page.dialog.close())],
+                actions_alignment=ft.MainAxisAlignment.END,
+            )
+            page.dialog = dialog
+            page.dialog.open = True
+            page.update()
 
         load_notes()
 
         return ft.Container(
             content=ft.Column([
                 note_list,
-                ft.Row([note_topic, note_content, ft.ElevatedButton("Add Note", on_click=add_note_click), ft.ElevatedButton("Upload", on_click=lambda e: file_picker.pick_files(allow_multiple=True))])
+                ft.Row([note_topic, note_content, ft.ElevatedButton("Add Note", on_click=add_note_click), ft.ElevatedButton("Upload Image", on_click=lambda e: file_picker.pick_files(allow_multiple=True))])
             ]),
             expand=True,
             padding=10
@@ -260,9 +273,8 @@ def main(page: ft.Page):
         expand=True
     )
 
+    page.overlay.append(file_picker)
     page.add(tabs)
 
 ft.app(target=main)
-
-# Start a background thread for checking deadlines
-threading.Thread(target=check_deadlines, daemon=True).start()
+threading = threading.Thread(target=check_deadlines, daemon=True)
