@@ -6,6 +6,7 @@ import threading
 import time
 import datetime
 import base64
+import plyer 
 
 # Gemini Part
 GOOGLE_API_KEY = ""
@@ -61,17 +62,26 @@ class Message:
         response = model.generate_content(text)
         self.response_text = response.text
 
+def notify(title: str, message: str):
+    plyer.notification.notify(
+        app_name="Task reminder",
+        title=title,
+        message=message,
+        timeout=10,    
+    )
+
 def check_deadlines():
     while True:
         try:
-            cur.execute("SELECT name, deadline FROM tasks WHERE deadline <= %s", 
-                        (datetime.date.today() + datetime.timedelta(days=1),))
+            cur.execute("SELECT name, deadline FROM tasks WHERE deadline <= %s", (datetime.date.today() + datetime.timedelta(days=1),))
             tasks = cur.fetchall()
             for task in tasks:
-                print(f"Reminder: The deadline for task '{task[0]}' is approaching on {task[1]}")
+                deadline = task[1]
+                if deadline <= datetime.date.today() + datetime.timedelta(days=1):
+                    notify("Reminder", f"The deadline for task '{task[0]}' is approaching on {deadline}")
             time.sleep(86400)  # Check every 24 hours
         except Exception as e:
-            print(f"Error checking deadlines: {e}")
+            #print(f"Error checking deadlines: {e}")
             time.sleep(60)  # Retry after 1 minute if there's an error
 
 def main(page: ft.Page):
@@ -81,9 +91,10 @@ def main(page: ft.Page):
         nonlocal selected_image
         if e.files:
             selected_image = e.files[0].read_bytes()
+            print(f"Image selected: {e.files[0].name}")
 
     file_picker = ft.FilePicker()
-    file_picker.on_file_picked = on_file_picked
+    file_picker.on_change = on_file_picked
 
     def build_chat_tab():
         chat = ft.ListView(expand=True, spacing=10, padding=10, auto_scroll=True)
@@ -97,15 +108,17 @@ def main(page: ft.Page):
         page.pubsub.subscribe(on_message)    
 
         def send_click(e):
-            page.pubsub.send_all(Message(user=page.session_id, text=new_message.value))
             user_message = new_message.value
             if user_message:
+                new_message.value = ""
+                notify("Heelo", "Cooking")
                 processing_text = ft.Text("Processing answer...", color="blue")
                 chat.controls.append(processing_text)
                 page.update()
+            message = Message(user=page.session_id, text=user_message)
+            page.pubsub.send_all(message)
             new_message.value = ""
             page.update()
-        
         return ft.Container(
             content=ft.Column([
                 chat,
@@ -194,11 +207,14 @@ def main(page: ft.Page):
                 for note in notes:
                     note_controls = [ft.Text(f"{note[1]}: {note[2]}")]
                     if note[3]:
+                        print(f"Note {note[0]} has an image.")
                         image_data = base64.b64encode(note[3]).decode('utf-8')
                         image_src = f"data:image/png;base64,{image_data}"
                         image_preview = ft.Image(src=image_src, fit=ft.ImageFit.contain, width=100, height=100)
-                        view_image_button = ft.TextButton("View Image", on_click=lambda e, image_src=image_src: view_image(image_src))
+                        view_image_button = ft.ElevatedButton("View Image", on_click=lambda e, image_src=image_src: view_image(image_src))
                         note_controls.extend([image_preview, view_image_button])
+                    else:
+                        print(f"Note {note[0]} does not have an image.")
                     note_controls.append(ft.ElevatedButton("Delete", on_click=lambda e, note_id=note[0]: delete_note(note_id)))
                     note_controls.append(ft.ElevatedButton("Ask", on_click=lambda e, note_id=note[0], note_topic=note[1], note_content=note[2]: ask_about_note(note_id, note_topic, note_content)))
                     note_list.controls.append(ft.Row(note_controls))
@@ -216,11 +232,14 @@ def main(page: ft.Page):
                         [note_topic.value, note_content.value, psycopg2.Binary(selected_image) if selected_image else None]
                     )
                     conn.commit()
+                    print("Note added successfully")
                     load_notes()
                     note_topic.value = ""
                     note_content.value = ""
                     selected_image = None
                     page.update()
+                else:
+                    print("Note topic or content is missing")
             except Exception as e:
                 print(f"Error adding note: {e}")
                 conn.rollback()
@@ -257,7 +276,7 @@ def main(page: ft.Page):
         return ft.Container(
             content=ft.Column([
                 note_list,
-                ft.Row([note_topic, note_content, ft.ElevatedButton("Add Note", on_click=add_note_click), ft.ElevatedButton("Upload Image", on_click=lambda e: file_picker.pick_files(allow_multiple=True))])
+                ft.Row([note_topic, note_content, ft.ElevatedButton("Add Note", on_click=add_note_click), ft.ElevatedButton("Upload Image", on_click=lambda e: file_picker.pick_files())])
             ]),
             expand=True,
             padding=10
@@ -276,5 +295,6 @@ def main(page: ft.Page):
     page.overlay.append(file_picker)
     page.add(tabs)
 
-ft.app(target=main)
-threading = threading.Thread(target=check_deadlines, daemon=True)
+if __name__ == "__main__":
+    threading.Thread(target=check_deadlines, daemon=True).start()
+    ft.app(target=main)
