@@ -6,8 +6,11 @@ import threading
 import time
 import datetime
 import base64
-import plyer 
-
+import plyer
+import os
+from flet.auth import OAuthProvider
+from google.oauth2 import id_token
+from google.auth.transport import requests as google_requests
 # Gemini Part
 GOOGLE_API_KEY = ""
 genai.configure(api_key=GOOGLE_API_KEY)
@@ -84,17 +87,50 @@ def check_deadlines():
             #print(f"Error checking deadlines: {e}")
             time.sleep(60)  # Retry after 1 minute if there's an error
 
+def verify_google_token(token):
+    try:
+        id_info = id_token.verify_oauth2_token(token, google_requests.Request())
+        if id_info['iss'] not in ['accounts.google.com', 'https://accounts.google.com']:
+            raise ValueError('Invalid token')
+        return id_info
+    except ValueError as e:
+        print(f"Error verifying Google token: {e}")
+        return None
+
 def main(page: ft.Page):
     selected_image = None
+    
+    provider = OAuthProvider(
+        client_id=os.getenv("GMAIL_CLIENT_ID"),
+        client_secret=os.getenv("GMAIL_CLIENT_SECRET"),
+        authorization_endpoint="https://accounts.google.com/o/oauth2/auth",
+        token_endpoint="https://accounts.google.com/o/oauth2/token",
+        user_endpoint="https://www.googleapis.com/oauth2/v1/userinfo",
+        user_scopes=["https://www.googleapis.com/auth/userinfo.email"],
+        user_id_fn=lambda u: u["id"],
+        redirect_url="http://localhost:8550/oauth_callback",
+    )
+    def login_click(e):
+        page.login(provider)
 
+    def on_login(e):
+        if e.error:
+            raise Exception(e.error)
+        print("User ID:", page.auth.user.id)
+        print("Access token:", page.auth.token.access_token)
+
+    page.on_login = on_login
+    page.add(ft.ElevatedButton("Login with Gmail", on_click=login_click))
     def on_file_picked(e):
         nonlocal selected_image
         if e.files:
             selected_image = e.files[0].read_bytes()
-            print(f"Image selected: {e.files[0].name}")
+            print(f"Image selected: {e.files[0].name}, Size: {len(selected_image)} bytes")
 
     file_picker = ft.FilePicker()
     file_picker.on_change = on_file_picked
+
+    page.overlay.append(file_picker) 
 
     def build_chat_tab():
         chat = ft.ListView(expand=True, spacing=10, padding=10, auto_scroll=True)
@@ -111,7 +147,6 @@ def main(page: ft.Page):
             user_message = new_message.value
             if user_message:
                 new_message.value = ""
-                notify("Heelo", "Cooking")
                 processing_text = ft.Text("Processing answer...", color="blue")
                 chat.controls.append(processing_text)
                 page.update()
@@ -208,13 +243,15 @@ def main(page: ft.Page):
                     note_controls = [ft.Text(f"{note[1]}: {note[2]}")]
                     if note[3]:
                         print(f"Note {note[0]} has an image.")
-                        image_data = base64.b64encode(note[3]).decode('utf-8')
-                        image_src = f"data:image/png;base64,{image_data}"
+                        image_data = note[3] if note[3] else None
+                        image_src = f"data:image/png;base64,{image_data}" if image_data else None
                         image_preview = ft.Image(src=image_src, fit=ft.ImageFit.contain, width=100, height=100)
                         view_image_button = ft.ElevatedButton("View Image", on_click=lambda e, image_src=image_src: view_image(image_src))
                         note_controls.extend([image_preview, view_image_button])
                     else:
                         print(f"Note {note[0]} does not have an image.")
+                        image_preview = ft.Text("No Image")
+                        note_controls.append(image_preview)
                     note_controls.append(ft.ElevatedButton("Delete", on_click=lambda e, note_id=note[0]: delete_note(note_id)))
                     note_controls.append(ft.ElevatedButton("Ask", on_click=lambda e, note_id=note[0], note_topic=note[1], note_content=note[2]: ask_about_note(note_id, note_topic, note_content)))
                     note_list.controls.append(ft.Row(note_controls))
@@ -227,9 +264,10 @@ def main(page: ft.Page):
             nonlocal selected_image
             try:
                 if note_topic.value and note_content.value:
+                    image_data = selected_image if selected_image else None
                     cur.execute(
                         sql.SQL("INSERT INTO notes (topic, content, image) VALUES (%s, %s, %s)"),
-                        [note_topic.value, note_content.value, psycopg2.Binary(selected_image) if selected_image else None]
+                        [note_topic.value, note_content.value, image_data]
                     )
                     conn.commit()
                     print("Note added successfully")
@@ -253,21 +291,19 @@ def main(page: ft.Page):
                 print(f"Error deleting note: {e}")
                 conn.rollback()
 
-        def ask_about_note(note_id, note_topic, note_content):          
-            message = f"Explain me more about {note_topic} where content is {note_content}"
+        def ask_about_note(note_id, note_topic, note_content):
+            message = f"Tell me more about {note_topic}: {note_content}"
             page.pubsub.send_all(Message(user=page.session_id, text=message))
             tabs.selected_index = 0
             page.update()
 
         def view_image(image_src):
-            image_viewer = ft.Image(src=image_src, fit=ft.ImageFit.contain)
-            dialog = ft.AlertDialog(
+            print(f"Viewing image: {image_src}")
+            page.dialog = ft.AlertDialog(
                 title=ft.Text("Image Viewer"),
-                content=image_viewer,
-                actions=[ft.TextButton("Close", on_click=lambda e: page.dialog.close())],
-                actions_alignment=ft.MainAxisAlignment.END,
+                content=ft.Image(src=image_src, fit=ft.ImageFit.contain),
+                actions=[ft.ElevatedButton("Close", on_click=lambda e: page.dialog.close())]
             )
-            page.dialog = dialog
             page.dialog.open = True
             page.update()
 
@@ -276,7 +312,7 @@ def main(page: ft.Page):
         return ft.Container(
             content=ft.Column([
                 note_list,
-                ft.Row([note_topic, note_content, ft.ElevatedButton("Add Note", on_click=add_note_click), ft.ElevatedButton("Upload Image", on_click=lambda e: file_picker.pick_files())])
+                ft.Row([note_topic, note_content, ft.IconButton(icon=ft.icons.ATTACH_FILE, on_click=lambda _: file_picker.pick_files(allow_multiple=False)), ft.ElevatedButton("Add Note", on_click=add_note_click)])
             ]),
             expand=True,
             padding=10
@@ -289,12 +325,17 @@ def main(page: ft.Page):
             ft.Tab(text="Tasks", icon=ft.icons.CHECK, content=build_tasks_tab()),
             ft.Tab(text="Notes", icon=ft.icons.NOTE, content=build_notes_tab())
         ],
-        expand=True
+        expand=1
     )
 
-    page.overlay.append(file_picker)
     page.add(tabs)
+    page.update()
 
+# Start the deadline checking thread
+deadline_thread = threading.Thread(target=check_deadlines, daemon=True)
+deadline_thread.start()
+
+ft.app(target=main)
 if __name__ == "__main__":
     threading.Thread(target=check_deadlines, daemon=True).start()
     ft.app(target=main)
