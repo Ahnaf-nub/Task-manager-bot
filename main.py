@@ -6,13 +6,7 @@ import threading
 import time
 import datetime
 import plyer
-import os
-import firebase_admin
-from firebase_admin import credentials, auth
-
-# Initialize Firebase Admin SDK
-cred = credentials.Certificate("C:/Users/abidu\OneDrive/Documents/idkf/tas_reminder/cred.json")
-firebase_admin.initialize_app(cred)
+import bcrypt
 
 # Google API Key
 GOOGLE_API_KEY = ""
@@ -23,7 +17,7 @@ model = genai.GenerativeModel('gemini-1.5-flash')
 DB_HOST = "localhost"
 DB_NAME = "postgres"
 DB_USER = "postgres"
-DB_PASSWORD = "Ahnafhaq12345"
+DB_PASSWORD = ""
 
 conn = psycopg2.connect(
     host=DB_HOST,
@@ -33,7 +27,7 @@ conn = psycopg2.connect(
 )
 cur = conn.cursor()
 
-# Create the tasks table if it doesn't exist
+# Create tables if they don't exist
 cur.execute('''
     CREATE TABLE IF NOT EXISTS tasks (
         id SERIAL PRIMARY KEY,
@@ -43,7 +37,6 @@ cur.execute('''
 ''')
 conn.commit()
 
-# Ensure the notes table exists
 cur.execute('''
     CREATE TABLE IF NOT EXISTS notes (
         id SERIAL PRIMARY KEY,
@@ -53,19 +46,40 @@ cur.execute('''
 ''')
 conn.commit()
 
+cur.execute('''
+    CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        username TEXT NOT NULL UNIQUE,
+        email TEXT NOT NULL UNIQUE,
+        password BYTEA NOT NULL  -- Store passwords as binary data
+    );
+''')
+conn.commit()
+
+
 class Message:
     def __init__(self, user: str, text: str):
         self.user = user
         response = model.generate_content(text)
         self.response_text = response.text
 
+
+def hash_password(password):
+    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
+
+def check_password(hashed_password, user_password):
+    pwhash = bcrypt.hashpw(user_password.encode('utf8'), bcrypt.gensalt())
+    password_hash = pwhash.decode('utf8') # decode the hash to prevent it from being encoded twice
+    return password_hash == hashed_password
+
 def notify(title: str, message: str):
     plyer.notification.notify(
         app_name="Task reminder",
         title=title,
         message=message,
-        timeout=10,    
+        timeout=10,
     )
+
 
 def check_deadlines():
     while True:
@@ -80,55 +94,93 @@ def check_deadlines():
         except Exception as e:
             time.sleep(60)  # Retry after 1 minute if there's an error
 
-def create_user(email, password):
+
+def register_user(username, email, password):
     try:
-        user = auth.create_user(
-            email=email,
-            password=password
+        # Hash the password and store it as bytes
+        hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
+        cur.execute(
+            sql.SQL("INSERT INTO users (username, email, password) VALUES (%s, %s, %s)"),
+            [username, email, hashed_password]  # Store the hashed password as bytes
         )
-        return user
+        conn.commit()
+        return True
     except Exception as e:
-        print(f"Error creating user: {e}")
-        return None
+        print(f"Error registering user: {e}")
+        conn.rollback()
+        return False
 
 def login_user(email, password):
     try:
-        user = auth.get_user_by_email(email)
-        return user
+        cur.execute(sql.SQL("SELECT id, password FROM users WHERE email = %s"), [email])
+        user = cur.fetchone()
+        if user:
+            user_id = user[0]
+            hashed_password = user[1]
+            if bcrypt.checkpw(password.encode('utf-8'), hashed_password.encode('utf-8')):
+                return user_id  # Return user id
+            else:
+                print("Password does not match.")
+                return None
+        else:
+            print("User not found.")
+            return None
     except Exception as e:
-        print(f"Error logging in user: {e}")
+        print(f"Error logging in: {e}")
         return None
+
+def handle_register(page, username, email, password):
+    if register_user(username, email, password):
+        page.add(ft.Text("Registration successful! You can now log in."))
+    else:
+        page.add(ft.Text("Registration failed. Try a different email/username."))
+
+
+def handle_login(page, email, password):
+    user_id = login_user(email, password)
+    if user_id:
+        page.session.set("logged_in", True)
+        page.session.set("user_id", user_id)
+        page.clean()
+        main(page)  # Reload the page to show the app
+    else:
+        page.add(ft.Text("Login failed. Check your credentials and try again."))
+
+
+def logout_click(e, page):
+    page.session.remove("logged_in")
+    page.session.remove("user_id")
+    page.clean()
+    main(page)  # Reload the page to show login/register
+
 
 def main(page: ft.Page):
     if not page.session.get("logged_in"):
-        email_input = ft.TextField(hint_text="Email")
-        password_input = ft.TextField(hint_text="Password", password=True)
-        
-        def register_user(e):
-            email = email_input.value
-            password = password_input.value
-            if email and password:
-                user = create_user(email, password)
-                if user:
-                    page.session.set("logged_in", True)
-                    page.session.set("user_info", {"email": email})
-                    page.update()
+        # Registration form
+        username = ft.TextField(label="Username")
+        email = ft.TextField(label="Email")
+        password = ft.TextField(label="Password", password=True)
+        register_button = ft.ElevatedButton("Register", on_click=lambda e: handle_register(page, username.value, email.value, password.value))
 
-        def login_user_func(e):
-            email = email_input.value
-            password = password_input.value
-            if email and password:
-                user = login_user(email, password)
-                if user:
-                    page.session.set("logged_in", True)
-                    page.session.set("user_info", {"email": email})
-                    page.update()
+        # Login form
+        login_email = ft.TextField(label="Email")
+        login_password = ft.TextField(label="Password", password=True)
+        login_button = ft.ElevatedButton("Login", on_click=lambda e: handle_login(page, login_email.value, login_password.value))
 
-        page.add(ft.Text("Register or Login"))
-        page.add(email_input)
-        page.add(password_input)
-        page.add(ft.ElevatedButton("Register", on_click=register_user))
-        page.add(ft.ElevatedButton("Login", on_click=login_user_func))
+        page.add(
+            ft.Column([
+                ft.Text("Register"),
+                username,
+                email,
+                password,
+                register_button,
+                ft.Text("Login"),
+                login_email,
+                login_password,
+                login_button
+            ])
+        )
+
     else:
         # Main application logic after user is authenticated
         def build_chat_tab():
@@ -153,6 +205,7 @@ def main(page: ft.Page):
                 page.pubsub.send_all(message)
                 new_message.value = ""
                 page.update()
+
             return ft.Container(
                 content=ft.Column([
                     chat,
@@ -165,7 +218,7 @@ def main(page: ft.Page):
         def build_tasks_tab():
             task_list = ft.ListView(expand=True, spacing=10, padding=10, auto_scroll=True)
             task_name = ft.TextField(expand=True, hint_text="Task name")
-            task_deadline = ft.TextField(expand=True, hint_text="Deadline")
+            task_deadline = ft.TextField(expand=True, hint_text="Deadline (YYYY-MM-DD)")
 
             def load_tasks():
                 try:
@@ -230,18 +283,18 @@ def main(page: ft.Page):
 
         def build_notes_tab():
             note_list = ft.ListView(expand=True, spacing=10, padding=10, auto_scroll=True)
-            note_topic = ft.TextField(hint_text="Topic")
-            note_content = ft.TextField(hint_text="Content", multiline=True)
+            note_topic = ft.TextField(expand=True, hint_text="Note topic")
+            note_content = ft.TextField(expand=True, hint_text="Note content")
 
             def load_notes():
                 try:
-                    cur.execute("SELECT id, topic, content FROM notes")
-                    notes = cur.fetchall()
                     note_list.controls.clear()
-                    for note in notes:
+                    cur.execute("SELECT id, topic, content FROM notes")
+                    for note in cur.fetchall():
                         note_list.controls.append(
                             ft.ListTile(
-                                title=ft.Row([ft.Text(f"{note[1]}: {note[2]}")]),
+                                title=ft.Text(note[1]),
+                                subtitle=ft.Text(f"{note[1]}: {note[2]}"),
                                 trailing=ft.IconButton(ft.icons.DELETE, on_click=lambda e, note_id=note[0]: delete_note_click(note_id))
                             )
                         )
@@ -296,7 +349,8 @@ def main(page: ft.Page):
             expand=1
         )
 
-        page.add(tabs)
+        logout_button = ft.ElevatedButton("Logout", on_click=lambda e: logout_click(e, page))
+        page.add(ft.Column([logout_button, tabs]))
         threading.Thread(target=check_deadlines, daemon=True).start()
 
 ft.app(target=main)
