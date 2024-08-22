@@ -6,7 +6,7 @@ import threading
 import time
 import datetime
 import plyer
-import bcrypt
+from passlib.hash import pbkdf2_sha256
 
 # Google API Key
 GOOGLE_API_KEY = ""
@@ -56,21 +56,26 @@ cur.execute('''
 ''')
 conn.commit()
 
+cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='notes' AND column_name='topic'")
+result = cur.fetchone()
+if not result:
+    cur.execute('ALTER TABLE notes ADD COLUMN topic TEXT NOT NULL')
+    conn.commit()
 
 class Message:
     def __init__(self, user: str, text: str):
         self.user = user
+        self.text = text
         response = model.generate_content(text)
         self.response_text = response.text
 
-
+# Function to hash a password
 def hash_password(password):
-    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
+    return pbkdf2_sha256.hash(password)
 
+# Function to check a password
 def check_password(hashed_password, user_password):
-    pwhash = bcrypt.hashpw(user_password.encode('utf8'), bcrypt.gensalt())
-    password_hash = pwhash.decode('utf8') # decode the hash to prevent it from being encoded twice
-    return password_hash == hashed_password
+    return pbkdf2_sha256.verify(user_password, hashed_password)
 
 def notify(title: str, message: str):
     plyer.notification.notify(
@@ -79,7 +84,6 @@ def notify(title: str, message: str):
         message=message,
         timeout=10,
     )
-
 
 def check_deadlines():
     while True:
@@ -92,16 +96,16 @@ def check_deadlines():
                     notify("Reminder", f"The deadline for task '{task[0]}' is approaching on {deadline}")
             time.sleep(86400)  # Check every 24 hours
         except Exception as e:
+            print(f"Error checking deadlines: {e}")
             time.sleep(60)  # Retry after 1 minute if there's an error
-
 
 def register_user(username, email, password):
     try:
-        # Hash the password and store it as bytes
-        hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
+        # Hash the password
+        hashed_password = hash_password(password)
         cur.execute(
             sql.SQL("INSERT INTO users (username, email, password) VALUES (%s, %s, %s)"),
-            [username, email, hashed_password]  # Store the hashed password as bytes
+            [username, email, hashed_password]  # Store the hashed password as a string
         )
         conn.commit()
         return True
@@ -110,14 +114,15 @@ def register_user(username, email, password):
         conn.rollback()
         return False
 
+
 def login_user(email, password):
     try:
         cur.execute(sql.SQL("SELECT id, password FROM users WHERE email = %s"), [email])
         user = cur.fetchone()
         if user:
             user_id = user[0]
-            hashed_password = user[1]
-            if bcrypt.checkpw(password.encode('utf-8'), hashed_password.encode('utf-8')):
+            hashed_password = user[1]  # Retrieved password as string
+            if check_password(hashed_password, password):
                 return user_id  # Return user id
             else:
                 print("Password does not match.")
@@ -135,7 +140,6 @@ def handle_register(page, username, email, password):
     else:
         page.add(ft.Text("Registration failed. Try a different email/username."))
 
-
 def handle_login(page, email, password):
     user_id = login_user(email, password)
     if user_id:
@@ -146,13 +150,11 @@ def handle_login(page, email, password):
     else:
         page.add(ft.Text("Login failed. Check your credentials and try again."))
 
-
 def logout_click(e, page):
     page.session.remove("logged_in")
     page.session.remove("user_id")
     page.clean()
     main(page)  # Reload the page to show login/register
-
 
 def main(page: ft.Page):
     if not page.session.get("logged_in"):
@@ -180,7 +182,6 @@ def main(page: ft.Page):
                 login_button
             ])
         )
-
     else:
         # Main application logic after user is authenticated
         def build_chat_tab():
@@ -195,14 +196,12 @@ def main(page: ft.Page):
             page.pubsub.subscribe(on_message)
 
             def send_click(e):
+                page.pubsub.send_all(Message(user=page.session_id, text=new_message.value))
                 user_message = new_message.value
                 if user_message:
-                    new_message.value = ""
                     processing_text = ft.Text("Processing answer...", color="blue")
                     chat.controls.append(processing_text)
                     page.update()
-                message = Message(user=page.session_id, text=user_message)
-                page.pubsub.send_all(message)
                 new_message.value = ""
                 page.update()
 
@@ -218,7 +217,7 @@ def main(page: ft.Page):
         def build_tasks_tab():
             task_list = ft.ListView(expand=True, spacing=10, padding=10, auto_scroll=True)
             task_name = ft.TextField(expand=True, hint_text="Task name")
-            task_deadline = ft.TextField(expand=True, hint_text="Deadline (YYYY-MM-DD)")
+            task_deadline = ft.TextField(expand=True, hint_text="Deadline")
 
             def load_tasks():
                 try:
@@ -284,20 +283,18 @@ def main(page: ft.Page):
         def build_notes_tab():
             note_list = ft.ListView(expand=True, spacing=10, padding=10, auto_scroll=True)
             note_topic = ft.TextField(expand=True, hint_text="Note topic")
-            note_content = ft.TextField(expand=True, hint_text="Note content")
+            note_content = ft.TextField(expand=True, hint_text="Note content", multiline=True)
 
             def load_notes():
                 try:
-                    note_list.controls.clear()
                     cur.execute("SELECT id, topic, content FROM notes")
-                    for note in cur.fetchall():
-                        note_list.controls.append(
-                            ft.ListTile(
-                                title=ft.Text(note[1]),
-                                subtitle=ft.Text(f"{note[1]}: {note[2]}"),
-                                trailing=ft.IconButton(ft.icons.DELETE, on_click=lambda e, note_id=note[0]: delete_note_click(note_id))
-                            )
-                        )
+                    notes = cur.fetchall()
+                    note_list.controls.clear()
+                    for note in notes:
+                        note_controls = [ft.Text(f"{note[1]}: {note[2]}")]
+                        note_controls.append(ft.ElevatedButton("Delete", on_click=lambda e, note_id=note[0]: delete_note_click(note_id)))
+                        note_controls.append(ft.ElevatedButton("Ask", on_click=lambda e, note_id=note[0], note_topic=note[1], note_content=note[2]: ask_about_note(note_id, note_topic, note_content)))
+                        note_list.controls.append(ft.Row(note_controls))
                     page.update()
                 except Exception as e:
                     print(f"Error loading notes: {e}")
@@ -328,6 +325,18 @@ def main(page: ft.Page):
                     print(f"Error adding note: {e}")
                     conn.rollback()
 
+            def ask_about_note(note_id, note_topic, note_content):
+                if note_topic and note_content:       
+                    message = f"Explain me more about {note_topic} where content is {note_content}."
+                    page.pubsub.send_all(Message(user=page.session_id, text=message))
+                    tabs.selected_index = 0
+                    page.update()
+                else:
+                    message = f"Explain me more about {note_topic}."
+                    page.pubsub.send_all(Message(user=page.session_id, text=message))
+                    tabs.selected_index = 0
+                    page.update()
+
             load_notes()
 
             return ft.Container(
@@ -340,17 +349,18 @@ def main(page: ft.Page):
             )
 
         tabs = ft.Tabs(
-            tabs=[
-                ft.Tab(text="Chatbot", content=build_chat_tab()),
-                ft.Tab(text="Tasks", content=build_tasks_tab()),
-                ft.Tab(text="Notes", content=build_notes_tab())
-            ],
             selected_index=0,
-            expand=1
+            tabs=[
+            ft.Tab(text="Chat", icon=ft.icons.CHAT, content=build_chat_tab()),
+            ft.Tab(text="Tasks", icon=ft.icons.CHECK, content=build_tasks_tab()),
+            ft.Tab(text="Notes", icon=ft.icons.NOTE, content=build_notes_tab())
+            ],
+            expand=True
         )
 
         logout_button = ft.ElevatedButton("Logout", on_click=lambda e: logout_click(e, page))
-        page.add(ft.Column([logout_button, tabs]))
+        page.add(tabs)
+        page.add(ft.Column([logout_button]))
         threading.Thread(target=check_deadlines, daemon=True).start()
 
 ft.app(target=main)
