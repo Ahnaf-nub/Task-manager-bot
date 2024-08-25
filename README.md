@@ -8,7 +8,7 @@ User Authentication: Secure account creation and login functionality with passwo
 
 **Notes Management**: Create, view, and delete personal notes for easy organization of ideas and tasks.
 
-**AI Chatbot Integration**: Interact with a generative AI model powered by Google’s Gemini API for task-related queries and assistance.
+**AI Chatbot Integration**: Interact with a generative AI model powered by Google’s Gemini API for task-related queries and assistance. Also, by clicking on the added Tasks or Notes gemini can help you to go through it faster!
 
 
 **Push Notifications**: Real-time reminders using plyer to notify users of approaching task deadlines.
