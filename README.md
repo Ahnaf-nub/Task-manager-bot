@@ -31,8 +31,8 @@ User Authentication: Secure account creation and login functionality with passwo
 
 1. **Clone the Repository**:
    ```bash
-   git clone https://github.com/Ahnaf-nub/Functionally_Dysfunctional_Text_Editor.git
-   cd functionally-dysfunctional-text-editor
+   git clone https://github.com/Ahnaf-nub/Task-manager-bot.git
+   cd Task-manager-bot
 2. **Install the dependencies**
    ```
    pip install -r requirements.txt
