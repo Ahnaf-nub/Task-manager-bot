@@ -26,3 +26,16 @@ User Authentication: Secure account creation and login functionality with passwo
 **passlib**: For secure password hashing and verification.
 
 **plyer**: For cross-platform push notifications.
+
+## For running Locally
+
+1. **Clone the Repository**:
+   ```bash
+   git clone https://github.com/Ahnaf-nub/Functionally_Dysfunctional_Text_Editor.git
+   cd functionally-dysfunctional-text-editor
+2. **Install the dependencies**
+   ```
+   pip install -r requirements.txt
+3. **Run the main file**
+   ```
+   python main.py
