@@ -1,6 +1,6 @@
 # Task Manager and Helper Bot
 This project is a comprehensive task management and AI-driven chatbot application built using Python, PostgreSQL, and Flet for the user interface. It allows users to manage tasks, take notes, and interact with a generative AI model for assistance. The application also features a user authentication system, push notifications for upcoming deadlines, and more.
-
+![Screenshot 2024-08-31 194456](https://github.com/user-attachments/assets/9df536cb-124a-461c-96ca-46fa4a51af1d)
 Key Features:
 User Authentication: Secure account creation and login functionality with password hashing using passlib and data storage in PostgreSQL.
 
