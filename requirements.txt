@@ -1,5 +1,0 @@
-flet==0.22.*
-google-generativeai
-psycopg2
-plyer
-passlib
