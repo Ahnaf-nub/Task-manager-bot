@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Task Manager and Helper Bot
 This project is a comprehensive task management and AI-driven chatbot application built using Python, PostgreSQL, and Flet for the user interface. It allows users to manage tasks, take notes, and interact with a generative AI model for assistance. The application also features a user authentication system, push notifications for upcoming deadlines, and more.
 ![Screenshot 2024-08-31 194456](https://github.com/user-attachments/assets/e22f2c8f-5b3d-4486-9e58-f56f7efd3197)
@@ -41,3 +42,21 @@ User Authentication: Secure account creation and login functionality with passwo
 3. **Run the main file**
    ```
    python main.py
+=======
+# ai_asistant_from_flet
+
+A new Flutter project.
+
+## Getting Started
+
+This project is a starting point for a Flutter application.
+
+A few resources to get you started if this is your first Flutter project:
+
+- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
+- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+
+For help getting started with Flutter development, view the
+[online documentation](https://docs.flutter.dev/), which offers tutorials,
+samples, guidance on mobile development, and a full API reference.
+>>>>>>> a2f6022 (Lots of upgrades)
